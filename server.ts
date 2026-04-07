@@ -248,6 +248,34 @@ const TOOLS = [
       properties: {},
     },
   },
+  {
+    name: "team_status",
+    description:
+      "Show all connected Claude Code sessions in the current space. Displays each session's name (from summary), machine, and status. Like a lobby view of who's online.",
+    inputSchema: {
+      type: "object" as const,
+      properties: {},
+    },
+  },
+  {
+    name: "talk",
+    description:
+      'Send a message to a peer by name (from their summary). Example: talk(to: "西川", message: "こんにちは"). If multiple peers match, lists them for disambiguation.',
+    inputSchema: {
+      type: "object" as const,
+      properties: {
+        to: {
+          type: "string" as const,
+          description: "The name of the target peer (matched against their summary)",
+        },
+        message: {
+          type: "string" as const,
+          description: "The message to send",
+        },
+      },
+      required: ["to", "message"],
+    },
+  },
 ];
 
 // --- Tool handlers ---
@@ -422,6 +450,134 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
             {
               type: "text" as const,
               text: `Error checking messages: ${e instanceof Error ? e.message : String(e)}`,
+            },
+          ],
+          isError: true,
+        };
+      }
+    }
+
+    case "team_status": {
+      try {
+        const peers = await brokerFetch<Peer[]>("/list-peers", {
+          scope: "space",
+          cwd: myCwd,
+          git_root: myGitRoot,
+          space: SPACE,
+          exclude_id: myId,
+        });
+
+        if (peers.length === 0) {
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: `Space "${SPACE}" に他のセッションはありません。`,
+              },
+            ],
+          };
+        }
+
+        const lines = peers.map((p) => {
+          const name = p.summary || "(名前未設定)";
+          return `🟢 ${name}  [${p.machine}]  ID:${p.id}`;
+        });
+
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `📡 Space: ${SPACE}\n\n${lines.join("\n")}`,
+            },
+          ],
+        };
+      } catch (e) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `Error: ${e instanceof Error ? e.message : String(e)}`,
+            },
+          ],
+          isError: true,
+        };
+      }
+    }
+
+    case "talk": {
+      const { to, message } = args as { to: string; message: string };
+      if (!myId) {
+        return {
+          content: [{ type: "text" as const, text: "Not registered with broker yet" }],
+          isError: true,
+        };
+      }
+      try {
+        const peers = await brokerFetch<Peer[]>("/list-peers", {
+          scope: "space",
+          cwd: myCwd,
+          git_root: myGitRoot,
+          space: SPACE,
+          exclude_id: myId,
+        });
+
+        // Match by name (substring match against summary)
+        const matches = peers.filter((p) =>
+          p.summary.includes(to)
+        );
+
+        if (matches.length === 0) {
+          const available = peers.map((p) => `  - ${p.summary || "(名前未設定)"}`).join("\n");
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: `「${to}」に一致するセッションが見つかりません。\n\n接続中:\n${available || "  (なし)"}`,
+              },
+            ],
+          };
+        }
+
+        if (matches.length > 1) {
+          const list = matches.map((p, i) => `  ${i + 1}. ${p.summary}  [${p.machine}]  ID:${p.id}`).join("\n");
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: `「${to}」に複数一致しました。send_message で ID を直接指定してください:\n\n${list}`,
+              },
+            ],
+          };
+        }
+
+        const target = matches[0];
+        const result = await brokerFetch<{ ok: boolean; error?: string }>("/send-message", {
+          from_id: myId,
+          to_id: target.id,
+          text: message,
+        });
+
+        if (!result.ok) {
+          return {
+            content: [{ type: "text" as const, text: `送信失敗: ${result.error}` }],
+            isError: true,
+          };
+        }
+
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `✅ ${target.summary} に送信しました`,
+            },
+          ],
+        };
+      } catch (e) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `Error: ${e instanceof Error ? e.message : String(e)}`,
             },
           ],
           isError: true,
