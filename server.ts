@@ -191,7 +191,7 @@ function drainInbox(): string[] {
 // --- MCP Server ---
 
 const mcp = new Server(
-  { name: "jgi-javis-connector", version: "0.1.0" },
+  { name: "claude-peers", version: "0.1.0" },
   {
     capabilities: {
       experimental: { "claude/channel": {} },
