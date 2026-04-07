@@ -32,6 +32,8 @@ import {
   getRecentFiles,
 } from "./shared/summarize.ts";
 import { hostname } from "os";
+import { writeFileSync, mkdirSync, unlinkSync, existsSync, readFileSync } from "fs";
+import { join } from "path";
 
 // --- Configuration ---
 
@@ -159,6 +161,32 @@ let myGitRoot: string | null = null;
 // Local cache for messages received via polling but not yet retrieved by check_messages
 // This prevents message loss when channel notifications don't reach Claude Code
 const pendingMessages: Message[] = [];
+
+// Inbox file for hook-based message delivery
+const INBOX_DIR = join(process.env.HOME ?? "/tmp", ".jgi-javis-connector");
+const INBOX_FILE = join(INBOX_DIR, "inbox.jsonl");
+
+function writeToInbox(msg: Message, fromSummary: string) {
+  try {
+    mkdirSync(INBOX_DIR, { recursive: true });
+    const line = JSON.stringify({ from_id: msg.from_id, from_summary: fromSummary, text: msg.text, sent_at: msg.sent_at }) + "\n";
+    writeFileSync(INBOX_FILE, line, { flag: "a" });
+  } catch {
+    // Non-critical
+  }
+}
+
+function drainInbox(): string[] {
+  try {
+    if (!existsSync(INBOX_FILE)) return [];
+    const content = readFileSync(INBOX_FILE, "utf-8").trim();
+    if (!content) return [];
+    unlinkSync(INBOX_FILE);
+    return content.split("\n");
+  } catch {
+    return [];
+  }
+}
 
 // --- MCP Server ---
 
@@ -623,6 +651,9 @@ async function pollAndPushMessages() {
       } catch {
         // Non-critical, proceed without sender info
       }
+
+      // Write to inbox file for hook-based delivery
+      writeToInbox(msg, fromSummary);
 
       // Push as channel notification — this is what makes it immediate
       try {
