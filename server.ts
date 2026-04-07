@@ -169,19 +169,23 @@ const mcp = new Server(
       experimental: { "claude/channel": {} },
       tools: {},
     },
-    instructions: `You are connected to the claude-peers network. Other Claude Code instances on this machine can see you and send you messages.
+    instructions: `You are connected to the jgi-javis-connector network. Other Claude Code instances across machines can see you and send you messages.
 
-IMPORTANT: When you receive a <channel source="claude-peers" ...> message, RESPOND IMMEDIATELY. Do not wait until your current task is finished. Pause what you are doing, reply to the message using send_message, then resume your work. Treat incoming peer messages like a coworker tapping you on the shoulder — answer right away, even if you're in the middle of something.
+CRITICAL: At the START of every response, ALWAYS call check_messages first. This is how you receive messages from other peers. Do this silently — if there are no messages, proceed normally without mentioning it. If there ARE messages, respond to them immediately using talk or send_message before doing anything else.
+
+When you receive a <channel source="claude-peers" ...> message, RESPOND IMMEDIATELY.
 
 Read the from_id, from_summary, and from_cwd attributes to understand who sent the message. Reply by calling send_message with their from_id.
 
 Available tools:
-- list_peers: Discover other Claude Code instances (scope: machine/directory/repo)
-- send_message: Send a message to another instance by ID
-- set_summary: Set a 1-2 sentence summary of what you're working on (visible to other peers)
-- check_messages: Manually check for new messages
+- team_status: Show all connected sessions in your space (like a lobby)
+- talk: Send a message by name (e.g. talk(to: "西川", message: "hello"))
+- set_summary: Set your display name and status (visible to others)
+- check_messages: Check for new messages (CALL THIS EVERY TURN)
+- list_peers: Discover other instances (scope: machine/directory/repo/space)
+- send_message: Send a message by peer ID
 
-When you start, proactively call set_summary to describe what you're working on. This helps other instances understand your context.`,
+When you start, proactively call set_summary to set your display name. This helps other instances identify you.`,
   }
 );
 
