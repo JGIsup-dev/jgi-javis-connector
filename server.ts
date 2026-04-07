@@ -112,7 +112,7 @@ async function ensureBroker(): Promise<void> {
 
 function log(msg: string) {
   // MCP stdio servers must only use stderr for logging (stdout is the MCP protocol)
-  console.error(`[claude-peers] ${msg}`);
+  console.error(`[jgi-javis-connector] ${msg}`);
 }
 
 async function getGitRoot(cwd: string): Promise<string | null> {
@@ -163,7 +163,7 @@ const pendingMessages: Message[] = [];
 // --- MCP Server ---
 
 const mcp = new Server(
-  { name: "claude-peers", version: "0.1.0" },
+  { name: "jgi-javis-connector", version: "0.1.0" },
   {
     capabilities: {
       experimental: { "claude/channel": {} },

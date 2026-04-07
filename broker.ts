@@ -295,4 +295,4 @@ Bun.serve({
   },
 });
 
-console.error(`[claude-peers broker] listening on ${BROKER_HOST}:${PORT} (db: ${DB_PATH})${API_KEY ? " [auth enabled]" : " [auth disabled]"}`);
+console.error(`[jgi-javis-connector broker] listening on ${BROKER_HOST}:${PORT} (db: ${DB_PATH})${API_KEY ? " [auth enabled]" : " [auth disabled]"}`);
