@@ -31,11 +31,14 @@ import {
   getGitBranch,
   getRecentFiles,
 } from "./shared/summarize.ts";
+import { hostname } from "os";
 
 // --- Configuration ---
 
 const BROKER_PORT = parseInt(process.env.CLAUDE_PEERS_PORT ?? "7899", 10);
-const BROKER_URL = `http://127.0.0.1:${BROKER_PORT}`;
+const BROKER_URL = process.env.CLAUDE_PEERS_BROKER_URL
+  ?? `http://${process.env.CLAUDE_PEERS_BROKER_HOST ?? "127.0.0.1"}:${BROKER_PORT}`;
+const API_KEY = process.env.CLAUDE_PEERS_API_KEY ?? "";
 const POLL_INTERVAL_MS = 1000;
 const HEARTBEAT_INTERVAL_MS = 15_000;
 const BROKER_SCRIPT = new URL("./broker.ts", import.meta.url).pathname;
@@ -43,9 +46,11 @@ const BROKER_SCRIPT = new URL("./broker.ts", import.meta.url).pathname;
 // --- Broker communication ---
 
 async function brokerFetch<T>(path: string, body: unknown): Promise<T> {
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (API_KEY) headers["Authorization"] = `Bearer ${API_KEY}`;
   const res = await fetch(`${BROKER_URL}${path}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers,
     body: JSON.stringify(body),
   });
   if (!res.ok) {
@@ -64,10 +69,21 @@ async function isBrokerAlive(): Promise<boolean> {
   }
 }
 
+function isRemoteBroker(): boolean {
+  const url = process.env.CLAUDE_PEERS_BROKER_URL;
+  if (!url) return false;
+  return !url.includes("127.0.0.1") && !url.includes("localhost");
+}
+
 async function ensureBroker(): Promise<void> {
   if (await isBrokerAlive()) {
     log("Broker already running");
     return;
+  }
+
+  // Don't auto-launch a local broker if we're connecting to a remote one
+  if (isRemoteBroker()) {
+    throw new Error(`Remote broker at ${BROKER_URL} is not reachable. Ensure it is running.`);
   }
 
   log("Starting broker daemon...");
@@ -263,6 +279,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
         const lines = peers.map((p) => {
           const parts = [
             `ID: ${p.id}`,
+            `Machine: ${p.machine}`,
             `PID: ${p.pid}`,
             `CWD: ${p.cwd}`,
           ];
@@ -493,6 +510,7 @@ async function main() {
     cwd: myCwd,
     git_root: myGitRoot,
     tty,
+    machine: hostname(),
     summary: initialSummary,
   });
   myId = reg.id;

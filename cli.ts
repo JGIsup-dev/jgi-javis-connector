@@ -12,16 +12,20 @@
  */
 
 const BROKER_PORT = parseInt(process.env.CLAUDE_PEERS_PORT ?? "7899", 10);
-const BROKER_URL = `http://127.0.0.1:${BROKER_PORT}`;
+const BROKER_URL = process.env.CLAUDE_PEERS_BROKER_URL
+  ?? `http://${process.env.CLAUDE_PEERS_BROKER_HOST ?? "127.0.0.1"}:${BROKER_PORT}`;
+const API_KEY = process.env.CLAUDE_PEERS_API_KEY ?? "";
 
 async function brokerFetch<T>(path: string, body?: unknown): Promise<T> {
+  const headers: Record<string, string> = {};
+  if (API_KEY) headers["Authorization"] = `Bearer ${API_KEY}`;
   const opts: RequestInit = body
     ? {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { ...headers, "Content-Type": "application/json" },
         body: JSON.stringify(body),
       }
-    : {};
+    : { headers };
   const res = await fetch(`${BROKER_URL}${path}`, {
     ...opts,
     signal: AbortSignal.timeout(3000),
