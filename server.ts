@@ -42,6 +42,15 @@ const BROKER_URL = process.env.CLAUDE_PEERS_BROKER_URL
   ?? `http://${process.env.CLAUDE_PEERS_BROKER_HOST ?? "127.0.0.1"}:${BROKER_PORT}`;
 const API_KEY = process.env.CLAUDE_PEERS_API_KEY ?? "";
 const SPACE = process.env.CLAUDE_PEERS_SPACE ?? "default";
+
+// pixel-office-jgi 連携用の visibility prefix モード（後方互換）。
+// 空文字なら従来挙動（prefix 付与なし）。
+// 詳細は pixel-office-jgi/ARCHITECTURE.md 5.7 (Option C) を参照。
+const USER_ID = process.env.CLAUDE_PEERS_USER_ID ?? "";
+const INITIAL_VISIBILITY_RAW = (process.env.CLAUDE_PEERS_VISIBILITY ?? "private").toLowerCase();
+const INITIAL_VISIBILITY: "public" | "private" =
+  INITIAL_VISIBILITY_RAW === "public" ? "public" : "private";
+
 const POLL_INTERVAL_MS = 1000;
 const HEARTBEAT_INTERVAL_MS = 15_000;
 const BROKER_SCRIPT = new URL("./broker.ts", import.meta.url).pathname;
@@ -157,6 +166,37 @@ function getTty(): string | null {
 let myId: PeerId | null = null;
 let myCwd = process.cwd();
 let myGitRoot: string | null = null;
+
+// --- Visibility prefix state (Option C) ---
+//
+// USER_ID が空の場合は完全に従来挙動（prefix なし）。
+// USER_ID がセットされていると、すべての summary に
+// `[user:<id>][<visibility>] ` という prefix を付け、
+// set_visibility tool で runtime に切替できる。
+let visibility: "public" | "private" = INITIAL_VISIBILITY;
+let userPrefix: string = USER_ID ? `[user:${USER_ID}][${visibility}] ` : "";
+// applyPrefix が剥がした「summary 本文」を保持する。
+// set_visibility が prefix だけ差し替えるときに使う（broker への往復を避ける）。
+let currentRolePart: string = "";
+
+// 既存 prefix 形式のマッチ:
+//   [user:xxx][public]  <body>
+//   [user:xxx][private] <body>
+//   [user:xxx]          <body>   (visibility 欠落の legacy/orphan ケース)
+const PREFIX_RE = /^\[user:[^\]]+\](?:\[(public|private)\])?\s*/;
+
+/**
+ * USER_ID モード時、broker に書き込む summary に必ず prefix を前置する。
+ * 同時に剥がした本文を currentRolePart に保存して set_visibility から再利用できるようにする。
+ *
+ * USER_ID が空（従来モード）なら入力をそのまま返す（後方互換）。
+ */
+function applyPrefix(rawSummary: string): string {
+  if (!USER_ID) return rawSummary;
+  const stripped = rawSummary.replace(PREFIX_RE, "");
+  currentRolePart = stripped;
+  return userPrefix + stripped;
+}
 
 // Local cache for messages received via polling but not yet retrieved by check_messages
 // This prevents message loss when channel notifications don't reach Claude Code
@@ -308,6 +348,22 @@ const TOOLS = [
       required: ["to", "message"],
     },
   },
+  {
+    name: "set_visibility",
+    description:
+      "Toggle this peer's visibility between public and private. Requires CLAUDE_PEERS_USER_ID env var to be set (Option C mode). When public, the peer appears on the pixel-office workspace; when private, it only exists as a lurker (still able to observe and talk to others).",
+    inputSchema: {
+      type: "object" as const,
+      properties: {
+        mode: {
+          type: "string" as const,
+          enum: ["public", "private"],
+          description: 'Target visibility mode. "public" = visible on workspace, "private" = lurker',
+        },
+      },
+      required: ["mode"],
+    },
+  },
 ];
 
 // --- Tool handlers ---
@@ -423,9 +479,12 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
         };
       }
       try {
-        await brokerFetch("/set-summary", { id: myId, summary });
+        // Option C: USER_ID モード時は prefix を強制付与する。
+        // 従来モード（USER_ID 未設定）では applyPrefix は素通り。
+        const finalSummary = applyPrefix(summary);
+        await brokerFetch("/set-summary", { id: myId, summary: finalSummary });
         return {
-          content: [{ type: "text" as const, text: `Summary updated: "${summary}"` }],
+          content: [{ type: "text" as const, text: `Summary updated: "${finalSummary}"` }],
         };
       } catch (e) {
         return {
@@ -617,6 +676,59 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
       }
     }
 
+    case "set_visibility": {
+      // Option C: pixel-office-jgi/ARCHITECTURE.md 5.7.4 参照
+      if (!myId) {
+        return {
+          content: [{ type: "text" as const, text: "Not registered with broker yet" }],
+          isError: true,
+        };
+      }
+      if (!USER_ID) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: "Error: set_visibility requires CLAUDE_PEERS_USER_ID env var to be set.",
+            },
+          ],
+          isError: true,
+        };
+      }
+      const { mode } = args as { mode: "public" | "private" };
+      if (mode !== "public" && mode !== "private") {
+        return {
+          content: [{ type: "text" as const, text: `Invalid mode: ${mode}` }],
+          isError: true,
+        };
+      }
+      // 内部状態を更新
+      visibility = mode;
+      userPrefix = `[user:${USER_ID}][${mode}] `;
+      const newFullSummary = userPrefix + currentRolePart;
+      try {
+        await brokerFetch("/set-summary", { id: myId, summary: newFullSummary });
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `Visibility set to ${mode}. Summary: "${newFullSummary}"`,
+            },
+          ],
+        };
+      } catch (e) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `Error setting visibility: ${e instanceof Error ? e.message : String(e)}`,
+            },
+          ],
+          isError: true,
+        };
+      }
+    }
+
     default:
       throw new Error(`Unknown tool: ${name}`);
   }
@@ -721,6 +833,9 @@ async function main() {
   await Promise.race([summaryPromise, new Promise((r) => setTimeout(r, 3000))]);
 
   // 4. Register with broker
+  // Option C: USER_ID モード時は prefix を register 時点から付ける。
+  // 従来モード（USER_ID 未設定）では applyPrefix は素通り。
+  const registerSummary = applyPrefix(initialSummary);
   const reg = await brokerFetch<RegisterResponse>("/register", {
     pid: process.pid,
     cwd: myCwd,
@@ -728,18 +843,20 @@ async function main() {
     tty,
     machine: hostname(),
     space: SPACE,
-    summary: initialSummary,
+    summary: registerSummary,
   });
   myId = reg.id;
-  log(`Registered as peer ${myId} in space "${SPACE}"`);
+  log(`Registered as peer ${myId} in space "${SPACE}"${USER_ID ? ` as user "${USER_ID}" (${visibility})` : ""}`);
 
   // If summary generation is still running, update it when done
   if (!initialSummary) {
     summaryPromise.then(async () => {
       if (initialSummary && myId) {
         try {
-          await brokerFetch("/set-summary", { id: myId, summary: initialSummary });
-          log(`Late auto-summary applied: ${initialSummary}`);
+          // Option C: 遅延 summary も applyPrefix 経由
+          const lateSummary = applyPrefix(initialSummary);
+          await brokerFetch("/set-summary", { id: myId, summary: lateSummary });
+          log(`Late auto-summary applied: ${lateSummary}`);
         } catch {
           // Non-critical
         }
